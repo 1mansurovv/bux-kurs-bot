@@ -8,13 +8,13 @@ const LOGO_URL = process.env.LOGO_URL;
 const bot = new Telegraf(TOKEN);
 
 // ====== STATE ======
-const userState = new Map(); 
-const spamData = new Map();
+const userState = new Map(); // chatId -> { step, name, phone }
+const spamData = new Map();  // chatId -> { timestamps: [], mutedUntil: 0 }
 
 const MAX_MSG_PER_10S = 5;
 const MUTE_SECONDS = 60;
 
-// ====== SPAM CHECK (PRIVATE CHAT UCHUN) ======
+// ====== SPAM CHECK ======
 function checkSpam(ctx) {
   const chatId = ctx.chat?.id;
   if (!chatId) return false;
@@ -31,7 +31,7 @@ function checkSpam(ctx) {
   if (info.timestamps.length > MAX_MSG_PER_10S) {
     info.mutedUntil = now + MUTE_SECONDS;
     spamData.set(chatId, info);
-    ctx.reply("⛔️ Juda tez-tez xabar yuboryapsiz.\n1 daqiqadan so‘ng urinib ko‘ring.")
+    ctx.reply("⛔️ Juda tez-tez xabar yuboryapsiz.\nIltimos, 1 daqiqadan so‘ng yana urinib ko‘ring.")
       .catch(()=>{});
     return false;
   }
@@ -40,34 +40,7 @@ function checkSpam(ctx) {
   return true;
 }
 
-// ====== GURUHDA BOSHQA BOT XABARINI O‘CHIRISH ======
-bot.on("message", async (ctx) => {
-  try {
-    if (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup") return;
-
-    // adminni tekshirmaymiz
-    if (ctx.from?.id === ADMIN_ID) return;
-
-    // agar xabar yuborgan user BOT bo‘lsa
-    if (ctx.from?.is_bot) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id);
-    }
-  } catch (e) {}
-});
-
-// ====== GURUHGA YANGI BOT QO‘SHILSA CHIQARISH ======
-bot.on("new_chat_members", async (ctx) => {
-  try {
-    for (const m of ctx.message.new_chat_members) {
-      if (m.is_bot) {
-        await ctx.reply("🚫 Botlar guruhga qo‘shilishi taqiqlangan.");
-        await ctx.telegram.banChatMember(ctx.chat.id, m.id);
-      }
-    }
-  } catch (e) {}
-});
-
-// ====== MENU ======
+// ====== KEYBOARD (anonim olib tashlandi) ======
 function mainMenu() {
   return Markup.keyboard([
     ["💰 Kurs haqida", "📘 O‘quv dasturi"],
@@ -81,7 +54,8 @@ bot.start(async (ctx) => {
 
   const caption =
     "👋 <b>Assalomu alaykum!</b>\n" +
-    "Bu bot orqali siz <b>4 oylik 'Buxgalteriya hisobi'</b> kursi haqida ma’lumot olishingiz mumkin.\n\n" +
+    "Bu bot orqali siz <b>4 oylik 'Buxgalteriya hisobi'</b> amaliy kursi haqida ma’lumot olishingiz " +
+    "va kursga yozilishingiz mumkin.\n\n" +
     "Quyidagi tugmalardan foydalaning 👇";
 
   await ctx.replyWithPhoto(LOGO_URL, {
@@ -95,48 +69,54 @@ bot.start(async (ctx) => {
 bot.hears("💰 Kurs haqida", (ctx) => {
   if (!checkSpam(ctx)) return;
 
-  ctx.reply(
-    "📚 <b>4 oylik Buxgalteriya hisobi kursi</b>\n\n" +
-    "📆 Davomiyligi: 4 oy\n" +
-    "💵 Oylik to‘lov: 1 500 000 so‘m\n\n" +
-    "📍 Manzil: Buxoro sh., Buxoro Savdo Majmuasi 530-ofis\n" +
-    "📞 Tel: +998936236239",
-    { parse_mode: "HTML" }
-  );
+  const text =
+    "📚 <b>4 oylik “Buxgalteriya hisobi” amaliy kursi</b>\n\n" +
+    "📆 <b>Davomiyligi:</b> 4 oy\n" +
+    "💵 <b>Oylik to‘lov:</b> 1 500 000 so‘m\n\n" +
+    "🎯 Maqsad — buxgalteriya, soliq bo‘yicha amaliy ko‘nikma va 1C dasturida mustaqil ishlashni o‘rgatish.\n\n" +
+    "📍 Manzil: Buxoro sh., Buxoro Savdo Majmuasi 2-qavat, 530-ofis, Shirinovs School\n" +
+    "📞 Aloqa: +998936236239, +998996626239";
+
+  ctx.reply(text, { parse_mode: "HTML" });
 });
 
 // ====== O‘quv dasturi ======
 bot.hears("📘 O‘quv dasturi", (ctx) => {
   if (!checkSpam(ctx)) return;
 
-  ctx.reply(
-    "📘 <b>O‘quv dasturi:</b>\n\n" +
-    "1️⃣ Buxgalteriya asoslari\n" +
-    "2️⃣ Soliq amaliyoti\n" +
-    "3️⃣ 1C dasturi\n" +
-    "4️⃣ Amaliyot",
-    { parse_mode: "HTML" }
-  );
+  const text =
+    "📘 <b>O‘quv dasturi (4 oy):</b>\n\n" +
+    "1️⃣ <b>1-oy:</b> Buxgalteriya hisobining asoslari\n" +
+    "2️⃣ <b>2-oy:</b> Soliq savodxonligi va amaliy misollar\n" +
+    "3️⃣ <b>3-oy:</b> “1C: Buxgalteriya 8.3 (3.0)” dasturida ishlash\n" +
+    "4️⃣ <b>4-oy:</b> Amaliyot — real misollar asosida buxgalteriya yuritish";
+
+  ctx.reply(text, { parse_mode: "HTML" });
 });
 
 // ====== Aloqa ======
 bot.hears("📞 Aloqa", (ctx) => {
   if (!checkSpam(ctx)) return;
 
-  ctx.reply(
-    "📞 Admin: @Sunnatillo_buxgalter\n" +
-    "📱 Tel: +998 93 623 62 39",
-    { parse_mode: "HTML" }
-  );
+  const text =
+    "📞 <b>Biz bilan bog‘laning:</b>\n\n" +
+    "👨‍🏫 Admin: @Sunnatillo_buxgalter\n" +
+    "📍 Manzil: Buxoro sh., Buxoro Savdo Majmuasi 2-qavat 530-ofis, Shirinovs School\n" +
+    "📱 Telefon: +998 93 623 62 39\n" +
+    "🌐 Sayt: www.shirinovschool.uz";
+
+  ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// ====== Kursga yozilish ======
+// ====== Kursga yozilish (start) ======
 bot.hears("📥 Kursga yozilish", (ctx) => {
   if (!checkSpam(ctx)) return;
+
   userState.set(ctx.chat.id, { step: "get_name" });
   ctx.reply("📋 Ismingizni kiriting:");
 });
 
+// ====== Bitta text handler (kursga yozilish flow) ======
 bot.on("text", async (ctx) => {
   if (!checkSpam(ctx)) return;
 
@@ -145,14 +125,14 @@ bot.on("text", async (ctx) => {
 
   if (state?.step === "get_name") {
     userState.set(chatId, { step: "get_phone", name: ctx.message.text });
-    return ctx.reply("📞 Telefon raqamingizni kiriting:");
+    return ctx.reply("📞 Telefon raqamingizni yuboring (+998 bilan):");
   }
 
   if (state?.step === "get_phone") {
     state.phone = ctx.message.text;
     state.step = "finish";
     userState.set(chatId, state);
-    return ctx.reply("✉️ Nima uchun kursga yozilmoqchisiz?");
+    return ctx.reply("✉️ Nima uchun kursga yozilmoqchisiz? (qisqacha yozing):");
   }
 
   if (state?.step === "finish") {
@@ -161,17 +141,23 @@ bot.on("text", async (ctx) => {
       "📥 <b>Yangi ariza!</b>\n\n" +
       `👤 Ism: ${state.name}\n` +
       `📞 Telefon: ${state.phone}\n` +
-      `💬 Izoh: ${ctx.message.text}`,
+      `💬 Izoh: ${ctx.message.text}\n` +
+      `🆔 ID: ${chatId}\n` +
+      "📘 Kurs: 4 oylik “Buxgalteriya hisobi” amaliy kursi",
       { parse_mode: "HTML" }
     );
 
     await ctx.reply(
-      "✅ Arizangiz yuborildi! Tez orada bog‘lanamiz.",
+      "✅ Arizangiz yuborildi! Tez orada siz bilan bog‘lanamiz. Rahmat!",
       Markup.removeKeyboard()
     );
 
     userState.delete(chatId);
+    return;
   }
+
+  // Agar user hech qaysi step’da bo‘lmasa, jim turamiz yoki xabar beramiz:
+  // return ctx.reply("Menyudan tugmalardan foydalaning 👇", mainMenu());
 });
 
 // ====== RUN ======
