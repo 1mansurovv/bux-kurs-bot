@@ -5,34 +5,42 @@ const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const LOGO_URL = process.env.LOGO_URL;
 
+if (!TOKEN) {
+  console.error("❌ BOT_TOKEN topilmadi (.env ni tekshiring)");
+  process.exit(1);
+}
+
 const bot = new Telegraf(TOKEN);
 
 // ====== STATE ======
 const userState = new Map(); // chatId -> { step, name, phone }
 const spamData = new Map();  // chatId -> { timestamps: [], mutedUntil: 0 }
 
+// ====== PRIVATE SPAM LIMIT ======
 const MAX_MSG_PER_10S = 5;
 const MUTE_SECONDS = 60;
 
-// ====== SPAM CHECK ======
-function checkSpam(ctx) {
+function isPrivate(ctx) {
+  return ctx.chat?.type === "private";
+}
+
+function checkSpamPrivate(ctx) {
   const chatId = ctx.chat?.id;
   if (!chatId) return false;
-  if (chatId === ADMIN_ID) return true;
+  if (ctx.from?.id === ADMIN_ID) return true;
 
   const now = Date.now() / 1000;
   const info = spamData.get(chatId) || { timestamps: [], mutedUntil: 0 };
 
   if (now < info.mutedUntil) return false;
 
-  info.timestamps = info.timestamps.filter(t => now - t < 10);
+  info.timestamps = info.timestamps.filter((t) => now - t < 10);
   info.timestamps.push(now);
 
   if (info.timestamps.length > MAX_MSG_PER_10S) {
     info.mutedUntil = now + MUTE_SECONDS;
     spamData.set(chatId, info);
-    ctx.reply("⛔️ Juda tez-tez xabar yuboryapsiz.\nIltimos, 1 daqiqadan so‘ng yana urinib ko‘ring.")
-      .catch(()=>{});
+    ctx.reply("⛔️ Juda tez-tez xabar yuboryapsiz.\n1 daqiqadan so‘ng urinib ko‘ring.").catch(() => {});
     return false;
   }
 
@@ -40,7 +48,50 @@ function checkSpam(ctx) {
   return true;
 }
 
-// ====== KEYBOARD (anonim olib tashlandi) ======
+// ====== GLOBAL ERROR LOG ======
+bot.catch((err) => console.error("BOT ERROR:", err));
+
+// =====================================================
+// ✅ 1) GURUH MODERATION (ESKI FLOWGA XALAQIT QILMAYDI)
+// =====================================================
+bot.use(async (ctx, next) => {
+  try {
+    const type = ctx.chat?.type;
+    if (type === "group" || type === "supergroup") {
+      // Guruhda bot yozgan bo'lsa o'chiramiz
+      if (ctx.from?.is_bot && ctx.from.id !== ADMIN_ID) {
+        if (ctx.message?.message_id) {
+          await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id);
+        }
+        return; // shu yerda tugaydi
+      }
+    }
+  } catch (e) {
+    // jim
+  }
+
+  return next();
+});
+
+// ✅ Guruhga yangi BOT qo‘shilsa chiqarib yuborish
+bot.on("new_chat_members", async (ctx) => {
+  try {
+    const type = ctx.chat?.type;
+    if (type !== "group" && type !== "supergroup") return;
+
+    for (const m of ctx.message.new_chat_members) {
+      if (m.is_bot) {
+        // botni chiqarib yuboradi (ban)
+        await ctx.telegram.banChatMember(ctx.chat.id, m.id).catch(() => {});
+      }
+    }
+  } catch (e) {}
+});
+
+// =====================================================
+// ✅ 2) PRIVATE BOT (KURS BOT) — FAQAT PRIVATE CHATDA
+// =====================================================
+
 function mainMenu() {
   return Markup.keyboard([
     ["💰 Kurs haqida", "📘 O‘quv dasturi"],
@@ -48,26 +99,35 @@ function mainMenu() {
   ]).resize();
 }
 
-// ====== /start ======
+// /start (faqat private)
 bot.start(async (ctx) => {
-  if (!checkSpam(ctx)) return;
+  if (!isPrivate(ctx)) return;
+  if (!checkSpamPrivate(ctx)) return;
 
   const caption =
     "👋 <b>Assalomu alaykum!</b>\n" +
-    "Bu bot orqali siz <b>4 oylik 'Buxgalteriya hisobi'</b> amaliy kursi haqida ma’lumot olishingiz " +
+    "Bu bot orqali siz <b>4 oylik “Buxgalteriya hisobi”</b> kursi haqida ma’lumot olishingiz " +
     "va kursga yozilishingiz mumkin.\n\n" +
     "Quyidagi tugmalardan foydalaning 👇";
 
-  await ctx.replyWithPhoto(LOGO_URL, {
-    caption,
-    parse_mode: "HTML",
-    ...mainMenu(),
-  });
+  if (LOGO_URL) {
+    await ctx.replyWithPhoto(LOGO_URL, {
+      caption,
+      parse_mode: "HTML",
+      ...mainMenu(),
+    }).catch(async () => {
+      // rasm xato bo'lsa oddiy reply
+      await ctx.reply(caption, { parse_mode: "HTML", ...mainMenu() });
+    });
+  } else {
+    await ctx.reply(caption, { parse_mode: "HTML", ...mainMenu() });
+  }
 });
 
-// ====== Kurs haqida ======
+// Kurs haqida (faqat private)
 bot.hears("💰 Kurs haqida", (ctx) => {
-  if (!checkSpam(ctx)) return;
+  if (!isPrivate(ctx)) return;
+  if (!checkSpamPrivate(ctx)) return;
 
   const text =
     "📚 <b>4 oylik “Buxgalteriya hisobi” amaliy kursi</b>\n\n" +
@@ -80,9 +140,10 @@ bot.hears("💰 Kurs haqida", (ctx) => {
   ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// ====== O‘quv dasturi ======
+// O‘quv dasturi (faqat private)
 bot.hears("📘 O‘quv dasturi", (ctx) => {
-  if (!checkSpam(ctx)) return;
+  if (!isPrivate(ctx)) return;
+  if (!checkSpamPrivate(ctx)) return;
 
   const text =
     "📘 <b>O‘quv dasturi (4 oy):</b>\n\n" +
@@ -94,9 +155,10 @@ bot.hears("📘 O‘quv dasturi", (ctx) => {
   ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// ====== Aloqa ======
+// Aloqa (faqat private)
 bot.hears("📞 Aloqa", (ctx) => {
-  if (!checkSpam(ctx)) return;
+  if (!isPrivate(ctx)) return;
+  if (!checkSpamPrivate(ctx)) return;
 
   const text =
     "📞 <b>Biz bilan bog‘laning:</b>\n\n" +
@@ -108,17 +170,19 @@ bot.hears("📞 Aloqa", (ctx) => {
   ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// ====== Kursga yozilish (start) ======
+// Kursga yozilish (start) — faqat private
 bot.hears("📥 Kursga yozilish", (ctx) => {
-  if (!checkSpam(ctx)) return;
+  if (!isPrivate(ctx)) return;
+  if (!checkSpamPrivate(ctx)) return;
 
   userState.set(ctx.chat.id, { step: "get_name" });
   ctx.reply("📋 Ismingizni kiriting:");
 });
 
-// ====== Bitta text handler (kursga yozilish flow) ======
+// Kursga yozilish flow — faqat private text
 bot.on("text", async (ctx) => {
-  if (!checkSpam(ctx)) return;
+  if (!isPrivate(ctx)) return;
+  if (!checkSpamPrivate(ctx)) return;
 
   const chatId = ctx.chat.id;
   const state = userState.get(chatId);
@@ -139,13 +203,13 @@ bot.on("text", async (ctx) => {
     await ctx.telegram.sendMessage(
       ADMIN_ID,
       "📥 <b>Yangi ariza!</b>\n\n" +
-      `👤 Ism: ${state.name}\n` +
-      `📞 Telefon: ${state.phone}\n` +
-      `💬 Izoh: ${ctx.message.text}\n` +
-      `🆔 ID: ${chatId}\n` +
-      "📘 Kurs: 4 oylik “Buxgalteriya hisobi” amaliy kursi",
+        `👤 Ism: ${state.name}\n` +
+        `📞 Telefon: ${state.phone}\n` +
+        `💬 Izoh: ${ctx.message.text}\n` +
+        `🆔 ID: ${chatId}\n` +
+        "📘 Kurs: 4 oylik “Buxgalteriya hisobi” amaliy kursi",
       { parse_mode: "HTML" }
-    );
+    ).catch(() => {});
 
     await ctx.reply(
       "✅ Arizangiz yuborildi! Tez orada siz bilan bog‘lanamiz. Rahmat!",
@@ -156,12 +220,12 @@ bot.on("text", async (ctx) => {
     return;
   }
 
-  // Agar user hech qaysi step’da bo‘lmasa, jim turamiz yoki xabar beramiz:
-  // return ctx.reply("Menyudan tugmalardan foydalaning 👇", mainMenu());
+  // step yo'q bo'lsa: menyu eslatma
+  // ctx.reply("Menyudan foydalaning 👇", mainMenu());
 });
 
 // ====== RUN ======
-bot.launch();
+bot.launch({ dropPendingUpdates: true });
 console.log("🤖 Bot ishga tushdi...");
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
