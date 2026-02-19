@@ -6,17 +6,86 @@ const ADMIN_ID = Number(process.env.ADMIN_ID);
 const LOGO_URL = process.env.LOGO_URL;
 
 if (!TOKEN) {
-  console.error("❌ BOT_TOKEN topilmadi (.env ni tekshiring)");
+  console.error("❌ BOT_TOKEN topilmadi (.env / Railway Variables tekshiring)");
   process.exit(1);
 }
 
 const bot = new Telegraf(TOKEN);
 
-// ====== STATE ======
-const userState = new Map(); // chatId -> { step, name, phone }
-const spamData = new Map();  // chatId -> { timestamps: [], mutedUntil: 0 }
+// =====================
+// GLOBAL ERROR HANDLER
+// =====================
+bot.catch((err) => {
+  console.error("❌ BOT ERROR:", err);
+});
 
-// ====== PRIVATE SPAM LIMIT ======
+// =====================
+// DEBUG: UPDATE KELYAPTIMI?
+// =====================
+bot.use(async (ctx, next) => {
+  try {
+    console.log(
+      "UPDATE:",
+      ctx.updateType,
+      "| CHAT:",
+      ctx.chat?.type,
+      "| CHAT_ID:",
+      ctx.chat?.id,
+      "| FROM:",
+      ctx.from?.id,
+      "| IS_BOT:",
+      ctx.from?.is_bot
+    );
+  } catch (e) {}
+  return next();
+});
+
+// =====================================================
+// ✅ GURUH: BOT XABAR YOZSA O‘CHIRISH
+// =====================================================
+bot.on("message", async (ctx) => {
+  const type = ctx.chat?.type;
+  if (type !== "group" && type !== "supergroup") return;
+
+  // admin yozsa tegmaymiz
+  if (ctx.from?.id === ADMIN_ID) return;
+
+  // bot yozgan bo‘lsa o‘chiramiz
+  if (ctx.from?.is_bot) {
+    console.log("🗑 DELETE bot message. from:", ctx.from?.username);
+    // ctx.deleteMessage() qulayroq
+    await ctx.deleteMessage();
+  }
+});
+
+// =====================================================
+// ✅ GURUH: YANGI BOT QO‘SHILSA CHIQARIB YUBORISH
+// =====================================================
+bot.on("new_chat_members", async (ctx) => {
+  const type = ctx.chat?.type;
+  if (type !== "group" && type !== "supergroup") return;
+
+  const members = ctx.message?.new_chat_members || [];
+  console.log("✅ new_chat_members fired:", members.map(m => ({
+    id: m.id,
+    username: m.username,
+    is_bot: m.is_bot
+  })));
+
+  for (const m of members) {
+    if (m.is_bot) {
+      console.log("🚫 Trying to BAN bot:", m.username, m.id);
+      await ctx.telegram.banChatMember(ctx.chat.id, m.id); // xatoni yashirmaymiz
+      console.log("✅ BANNED:", m.username);
+    }
+  }
+});
+
+// =====================
+// PRIVATE BOT (KURS BOT)
+// =====================
+const userState = new Map();
+const spamData = new Map();
 const MAX_MSG_PER_10S = 5;
 const MUTE_SECONDS = 60;
 
@@ -48,50 +117,6 @@ function checkSpamPrivate(ctx) {
   return true;
 }
 
-// ====== GLOBAL ERROR LOG ======
-bot.catch((err) => console.error("BOT ERROR:", err));
-
-// =====================================================
-// ✅ 1) GURUH MODERATION (ESKI FLOWGA XALAQIT QILMAYDI)
-// =====================================================
-bot.use(async (ctx, next) => {
-  try {
-    const type = ctx.chat?.type;
-    if (type === "group" || type === "supergroup") {
-      // Guruhda bot yozgan bo'lsa o'chiramiz
-      if (ctx.from?.is_bot && ctx.from.id !== ADMIN_ID) {
-        if (ctx.message?.message_id) {
-          await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id);
-        }
-        return; // shu yerda tugaydi
-      }
-    }
-  } catch (e) {
-    // jim
-  }
-
-  return next();
-});
-
-// ✅ Guruhga yangi BOT qo‘shilsa chiqarib yuborish
-bot.on("new_chat_members", async (ctx) => {
-  try {
-    const type = ctx.chat?.type;
-    if (type !== "group" && type !== "supergroup") return;
-
-    for (const m of ctx.message.new_chat_members) {
-      if (m.is_bot) {
-        // botni chiqarib yuboradi (ban)
-        await ctx.telegram.banChatMember(ctx.chat.id, m.id).catch(() => {});
-      }
-    }
-  } catch (e) {}
-});
-
-// =====================================================
-// ✅ 2) PRIVATE BOT (KURS BOT) — FAQAT PRIVATE CHATDA
-// =====================================================
-
 function mainMenu() {
   return Markup.keyboard([
     ["💰 Kurs haqida", "📘 O‘quv dasturi"],
@@ -99,7 +124,7 @@ function mainMenu() {
   ]).resize();
 }
 
-// /start (faqat private)
+// /start
 bot.start(async (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
@@ -116,7 +141,6 @@ bot.start(async (ctx) => {
       parse_mode: "HTML",
       ...mainMenu(),
     }).catch(async () => {
-      // rasm xato bo'lsa oddiy reply
       await ctx.reply(caption, { parse_mode: "HTML", ...mainMenu() });
     });
   } else {
@@ -124,7 +148,6 @@ bot.start(async (ctx) => {
   }
 });
 
-// Kurs haqida (faqat private)
 bot.hears("💰 Kurs haqida", (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
@@ -140,7 +163,6 @@ bot.hears("💰 Kurs haqida", (ctx) => {
   ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// O‘quv dasturi (faqat private)
 bot.hears("📘 O‘quv dasturi", (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
@@ -155,7 +177,6 @@ bot.hears("📘 O‘quv dasturi", (ctx) => {
   ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// Aloqa (faqat private)
 bot.hears("📞 Aloqa", (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
@@ -163,14 +184,12 @@ bot.hears("📞 Aloqa", (ctx) => {
   const text =
     "📞 <b>Biz bilan bog‘laning:</b>\n\n" +
     "👨‍🏫 Admin: @Sunnatillo_buxgalter\n" +
-    "📍 Manzil: Buxoro sh., Buxoro Savdo Majmuasi 2-qavat 530-ofis, Shirinovs School\n" +
     "📱 Telefon: +998 93 623 62 39\n" +
     "🌐 Sayt: www.shirinovschool.uz";
 
   ctx.reply(text, { parse_mode: "HTML" });
 });
 
-// Kursga yozilish (start) — faqat private
 bot.hears("📥 Kursga yozilish", (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
@@ -179,7 +198,6 @@ bot.hears("📥 Kursga yozilish", (ctx) => {
   ctx.reply("📋 Ismingizni kiriting:");
 });
 
-// Kursga yozilish flow — faqat private text
 bot.on("text", async (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
@@ -209,24 +227,15 @@ bot.on("text", async (ctx) => {
         `🆔 ID: ${chatId}\n` +
         "📘 Kurs: 4 oylik “Buxgalteriya hisobi” amaliy kursi",
       { parse_mode: "HTML" }
-    ).catch(() => {});
-
-    await ctx.reply(
-      "✅ Arizangiz yuborildi! Tez orada siz bilan bog‘lanamiz. Rahmat!",
-      Markup.removeKeyboard()
     );
 
+    await ctx.reply("✅ Arizangiz yuborildi! Tez orada bog‘lanamiz.", Markup.removeKeyboard());
     userState.delete(chatId);
-    return;
   }
-
-  // step yo'q bo'lsa: menyu eslatma
-  // ctx.reply("Menyudan foydalaning 👇", mainMenu());
 });
 
-// ====== RUN ======
+// =====================
+// RUN
+// =====================
 bot.launch({ dropPendingUpdates: true });
 console.log("🤖 Bot ishga tushdi...");
-
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
