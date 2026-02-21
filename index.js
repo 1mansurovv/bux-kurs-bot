@@ -1,12 +1,19 @@
 require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
+const express = require("express");
 
 const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
-const LOGO_URL = process.env.LOGO_URL;
+const LOGO_URL = process.env.LOGO_URL || "";
+const WEBHOOK_URL = process.env.WEBHOOK_URL || ""; // masalan: https://xxx.up.railway.app
+const PORT = Number(process.env.PORT || 3000);
 
 if (!TOKEN) {
   console.error("❌ BOT_TOKEN topilmadi (.env / Railway Variables tekshiring)");
+  process.exit(1);
+}
+if (!Number.isFinite(ADMIN_ID)) {
+  console.error("❌ ADMIN_ID noto‘g‘ri yoki yo‘q. Masalan: ADMIN_ID=123456789");
   process.exit(1);
 }
 
@@ -15,7 +22,7 @@ const bot = new Telegraf(TOKEN);
 // =====================
 // GLOBAL ERROR HANDLER
 // =====================
-bot.catch((err) => {
+bot.catch((err, ctx) => {
   console.error("❌ BOT ERROR:", err);
 });
 
@@ -40,58 +47,17 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// =====================================================
-// ✅ GURUH: BOT XABAR YOZSA O‘CHIRISH
-// =====================================================
-bot.on("message", async (ctx) => {
-  const type = ctx.chat?.type;
-  if (type !== "group" && type !== "supergroup") return;
-
-  // admin yozsa tegmaymiz
-  if (ctx.from?.id === ADMIN_ID) return;
-
-  // bot yozgan bo‘lsa o‘chiramiz
-  if (ctx.from?.is_bot) {
-    console.log("🗑 DELETE bot message. from:", ctx.from?.username);
-    // ctx.deleteMessage() qulayroq
-    await ctx.deleteMessage();
-  }
-});
-
-// =====================================================
-// ✅ GURUH: YANGI BOT QO‘SHILSA CHIQARIB YUBORISH
-// =====================================================
-bot.on("new_chat_members", async (ctx) => {
-  const type = ctx.chat?.type;
-  if (type !== "group" && type !== "supergroup") return;
-
-  const members = ctx.message?.new_chat_members || [];
-  console.log("✅ new_chat_members fired:", members.map(m => ({
-    id: m.id,
-    username: m.username,
-    is_bot: m.is_bot
-  })));
-
-  for (const m of members) {
-    if (m.is_bot) {
-      console.log("🚫 Trying to BAN bot:", m.username, m.id);
-      await ctx.telegram.banChatMember(ctx.chat.id, m.id); // xatoni yashirmaymiz
-      console.log("✅ BANNED:", m.username);
-    }
-  }
-});
-
 // =====================
-// PRIVATE BOT (KURS BOT)
+// HELPERS
 // =====================
+function isPrivate(ctx) {
+  return ctx.chat?.type === "private";
+}
+
 const userState = new Map();
 const spamData = new Map();
 const MAX_MSG_PER_10S = 5;
 const MUTE_SECONDS = 60;
-
-function isPrivate(ctx) {
-  return ctx.chat?.type === "private";
-}
 
 function checkSpamPrivate(ctx) {
   const chatId = ctx.chat?.id;
@@ -109,7 +75,9 @@ function checkSpamPrivate(ctx) {
   if (info.timestamps.length > MAX_MSG_PER_10S) {
     info.mutedUntil = now + MUTE_SECONDS;
     spamData.set(chatId, info);
-    ctx.reply("⛔️ Juda tez-tez xabar yuboryapsiz.\n1 daqiqadan so‘ng urinib ko‘ring.").catch(() => {});
+    ctx
+      .reply("⛔️ Juda tez-tez xabar yuboryapsiz.\n1 daqiqadan so‘ng urinib ko‘ring.")
+      .catch(() => {});
     return false;
   }
 
@@ -124,6 +92,54 @@ function mainMenu() {
   ]).resize();
 }
 
+// =====================================================
+// ✅ GURUH: BOT XABAR YOZSA O‘CHIRISH
+// =====================================================
+bot.on("message", async (ctx, next) => {
+  const type = ctx.chat?.type;
+  if (type === "group" || type === "supergroup") {
+    // admin yozsa tegmaymiz
+    if (ctx.from?.id === ADMIN_ID) return next();
+
+    // bot yozgan bo‘lsa o‘chiramiz
+    if (ctx.from?.is_bot) {
+      try {
+        await ctx.deleteMessage();
+        console.log("🗑 Deleted bot message:", ctx.from?.username, ctx.from?.id);
+      } catch (e) {
+        console.error("❌ Delete failed (bot admin emas bo‘lishi mumkin):", e?.description || e);
+      }
+      return; // groupdagi bot msg uchun shu yerda tugatamiz
+    }
+  }
+
+  return next();
+});
+
+// =====================================================
+// ✅ GURUH: YANGI BOT QO‘SHILSA BAN QILISH
+// =====================================================
+bot.on("new_chat_members", async (ctx) => {
+  const type = ctx.chat?.type;
+  if (type !== "group" && type !== "supergroup") return;
+
+  const members = ctx.message?.new_chat_members || [];
+  for (const m of members) {
+    if (m.is_bot) {
+      try {
+        await ctx.telegram.banChatMember(ctx.chat.id, m.id);
+        console.log("✅ BANNED bot:", m.username, m.id);
+      } catch (e) {
+        console.error("❌ Ban failed (bot admin emas bo‘lishi mumkin):", e?.description || e);
+      }
+    }
+  }
+});
+
+// =====================
+// PRIVATE BOT (KURS BOT)
+// =====================
+
 // /start
 bot.start(async (ctx) => {
   if (!isPrivate(ctx)) return;
@@ -136,19 +152,17 @@ bot.start(async (ctx) => {
     "Quyidagi tugmalardan foydalaning 👇";
 
   if (LOGO_URL) {
-    await ctx.replyWithPhoto(LOGO_URL, {
-      caption,
-      parse_mode: "HTML",
-      ...mainMenu(),
-    }).catch(async () => {
-      await ctx.reply(caption, { parse_mode: "HTML", ...mainMenu() });
-    });
+    await ctx
+      .replyWithPhoto(LOGO_URL, { caption, parse_mode: "HTML", ...mainMenu() })
+      .catch(async () => {
+        await ctx.reply(caption, { parse_mode: "HTML", ...mainMenu() });
+      });
   } else {
     await ctx.reply(caption, { parse_mode: "HTML", ...mainMenu() });
   }
 });
 
-bot.hears("💰 Kurs haqida", (ctx) => {
+bot.hears("💰 Kurs haqida", async (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
 
@@ -160,10 +174,10 @@ bot.hears("💰 Kurs haqida", (ctx) => {
     "📍 Manzil: Buxoro sh., Buxoro Savdo Majmuasi 2-qavat, 530-ofis, Shirinovs School\n" +
     "📞 Aloqa: +998936236239, +998996626239";
 
-  ctx.reply(text, { parse_mode: "HTML" });
+  await ctx.reply(text, { parse_mode: "HTML" });
 });
 
-bot.hears("📘 O‘quv dasturi", (ctx) => {
+bot.hears("📘 O‘quv dasturi", async (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
 
@@ -174,10 +188,10 @@ bot.hears("📘 O‘quv dasturi", (ctx) => {
     "3️⃣ <b>3-oy:</b> “1C: Buxgalteriya 8.3 (3.0)” dasturida ishlash\n" +
     "4️⃣ <b>4-oy:</b> Amaliyot — real misollar asosida buxgalteriya yuritish";
 
-  ctx.reply(text, { parse_mode: "HTML" });
+  await ctx.reply(text, { parse_mode: "HTML" });
 });
 
-bot.hears("📞 Aloqa", (ctx) => {
+bot.hears("📞 Aloqa", async (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
 
@@ -187,15 +201,15 @@ bot.hears("📞 Aloqa", (ctx) => {
     "📱 Telefon: +998 93 623 62 39\n" +
     "🌐 Sayt: www.shirinovschool.uz";
 
-  ctx.reply(text, { parse_mode: "HTML" });
+  await ctx.reply(text, { parse_mode: "HTML" });
 });
 
-bot.hears("📥 Kursga yozilish", (ctx) => {
+bot.hears("📥 Kursga yozilish", async (ctx) => {
   if (!isPrivate(ctx)) return;
   if (!checkSpamPrivate(ctx)) return;
 
   userState.set(ctx.chat.id, { step: "get_name" });
-  ctx.reply("📋 Ismingizni kiriting:");
+  await ctx.reply("📋 Ismingizni kiriting:");
 });
 
 bot.on("text", async (ctx) => {
@@ -218,16 +232,20 @@ bot.on("text", async (ctx) => {
   }
 
   if (state?.step === "finish") {
-    await ctx.telegram.sendMessage(
-      ADMIN_ID,
-      "📥 <b>Yangi ariza!</b>\n\n" +
-        `👤 Ism: ${state.name}\n` +
-        `📞 Telefon: ${state.phone}\n` +
-        `💬 Izoh: ${ctx.message.text}\n` +
-        `🆔 ID: ${chatId}\n` +
-        "📘 Kurs: 4 oylik “Buxgalteriya hisobi” amaliy kursi",
-      { parse_mode: "HTML" }
-    );
+    try {
+      await ctx.telegram.sendMessage(
+        ADMIN_ID,
+        "📥 <b>Yangi ariza!</b>\n\n" +
+          `👤 Ism: ${state.name}\n` +
+          `📞 Telefon: ${state.phone}\n` +
+          `💬 Izoh: ${ctx.message.text}\n` +
+          `🆔 ID: ${chatId}\n` +
+          "📘 Kurs: 4 oylik “Buxgalteriya hisobi” amaliy kursi",
+        { parse_mode: "HTML" }
+      );
+    } catch (e) {
+      console.error("❌ ADMIN ga yuborishda xato:", e?.description || e);
+    }
 
     await ctx.reply("✅ Arizangiz yuborildi! Tez orada bog‘lanamiz.", Markup.removeKeyboard());
     userState.delete(chatId);
@@ -235,7 +253,34 @@ bot.on("text", async (ctx) => {
 });
 
 // =====================
-// RUN
+// RUN (Webhook yoki Polling)
 // =====================
-bot.launch({ dropPendingUpdates: true });
-console.log("🤖 Bot ishga tushdi...");
+async function start() {
+  // webhook qolib ketgan bo‘lishi mumkin — tozalab yuboramiz
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+  } catch (e) {
+    console.log("deleteWebhook skip:", e?.description || e);
+  }
+
+  if (WEBHOOK_URL) {
+    const app = express();
+    app.get("/", (req, res) => res.status(200).send("OK"));
+    app.use(bot.webhookCallback("/telegraf"));
+
+    await bot.telegram.setWebhook(`${WEBHOOK_URL}/telegraf`);
+    app.listen(PORT, () => console.log(`🌐 Webhook server running on :${PORT}`));
+    console.log("✅ Webhook mode ON:", `${WEBHOOK_URL}/telegraf`);
+  } else {
+    await bot.launch({ dropPendingUpdates: true });
+    console.log("✅ Polling mode ON");
+  }
+}
+
+start().catch((e) => {
+  console.error("❌ Start failed:", e);
+  process.exit(1);
+});
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
