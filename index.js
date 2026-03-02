@@ -3,9 +3,9 @@ const { Telegraf, Markup } = require("telegraf");
 const express = require("express");
 
 const TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = Number(process.env.ADMIN_ID); // private bot uchun arizalar shu ID ga boradi
+const ADMIN_ID = Number(process.env.ADMIN_ID);
 const LOGO_URL = process.env.LOGO_URL || "";
-const WEBHOOK_URL = process.env.WEBHOOK_URL || ""; // masalan: https://xxx.up.railway.app
+const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 const PORT = Number(process.env.PORT || 3000);
 
 if (!TOKEN) {
@@ -60,9 +60,20 @@ async function isGroupAdminOrCreator(ctx) {
     const member = await ctx.telegram.getChatMember(ctx.chat.id, ctx.from.id);
     return member && (member.status === "creator" || member.status === "administrator");
   } catch (e) {
-    // getChatMember ishlamasa (masalan ruxsat/cheklov), admin deb hisoblamaymiz
     return false;
   }
+}
+
+function isForwardMessage(ctx) {
+  const m = ctx.message;
+  if (!m) return false;
+  // Telegram forward belgilari
+  return Boolean(
+    m.forward_date ||
+      m.forward_from ||
+      m.forward_from_chat ||
+      m.forward_sender_name
+  );
 }
 
 const userState = new Map();
@@ -104,23 +115,40 @@ function mainMenu() {
 }
 
 // =====================================================
-// ✅ GURUH: REKLAMA/SSILKA O‘CHIRISH + BOT MSG O‘CHIRISH
+// ✅ GURUH: FORWARD / REKLAMA / SSILKA O‘CHIRISH + BOT MSG O‘CHIRISH
 //    (CREATOR/ADMIN bo‘lsa tegmaydi)
 // =====================================================
 bot.on("message", async (ctx, next) => {
   const type = ctx.chat?.type;
+
   if (type === "group" || type === "supergroup") {
-    // ✅ 0) Creator/Admin bo‘lsa tegmaymiz (ssilka ham qoladi)
+    // ✅ 0) Botning o‘zi yozgan xabarlarga tegmaymiz (aks holda javoblar o‘chib ketadi)
+    if (ctx.from?.id && ctx.botInfo?.id && ctx.from.id === ctx.botInfo.id) {
+      return next();
+    }
+
+    // ✅ 1) Creator/Admin bo‘lsa tegmaymiz
     const isPrivileged = await isGroupAdminOrCreator(ctx);
     if (isPrivileged) return next();
 
-    // ✅ 1) Odamlar reklama/ssilka tashlasa — o‘chiramiz
+    // ✅ 2) Forward bo‘lsa (Переслано из ...) — o‘chiramiz
+    if (isForwardMessage(ctx)) {
+      try {
+        await ctx.deleteMessage();
+        console.log("🗑 Deleted forwarded message from:", ctx.from?.id);
+      } catch (e) {
+        console.error("❌ Forward delete failed:", e?.description || e);
+      }
+      return;
+    }
+
+    // ✅ 3) Link/reklama tekshiruvi (text yoki caption ichida)
     const text = ctx.message?.text || ctx.message?.caption || "";
 
     const hasLink =
       /https?:\/\/\S+/i.test(text) ||
       /t\.me\/\S+/i.test(text) ||
-      /@\w{4,}/.test(text); // @username (ko‘p reklama shunaqa bo‘ladi)
+      /@\w{4,}/.test(text);
 
     const adWords =
       /(reklama|aksiya|skidka|obuna|kanal|канал|подпис|promo|bonus)/i.test(text);
@@ -130,24 +158,18 @@ bot.on("message", async (ctx, next) => {
         await ctx.deleteMessage();
         console.log("🗑 Deleted ad/link message from:", ctx.from?.id);
       } catch (e) {
-        console.error(
-          "❌ Ad delete failed (bot admin emas yoki ruxsat yo‘q):",
-          e?.description || e
-        );
+        console.error("❌ Ad delete failed:", e?.description || e);
       }
       return;
     }
 
-    // ✅ 2) Bot yozgan bo‘lsa o‘chiramiz (privileged emaslar uchun)
+    // ✅ 4) Boshqa bot yozsa o‘chiramiz (bizning botdan tashqari)
     if (ctx.from?.is_bot) {
       try {
         await ctx.deleteMessage();
         console.log("🗑 Deleted bot message:", ctx.from?.username, ctx.from?.id);
       } catch (e) {
-        console.error(
-          "❌ Delete failed (bot admin emas bo‘lishi mumkin):",
-          e?.description || e
-        );
+        console.error("❌ Bot msg delete failed:", e?.description || e);
       }
       return;
     }
@@ -176,12 +198,24 @@ bot.on("new_chat_members", async (ctx) => {
 
         console.log("✅ KICKED bot:", m.username, m.id);
       } catch (e) {
-        console.error(
-          "❌ Kick failed (bot admin emas yoki ruxsat yo‘q):",
-          e?.description || e
-        );
+        console.error("❌ Kick failed:", e?.description || e);
       }
     }
+  }
+});
+
+// =====================================================
+// ✅ GURUH: CHIQDI/CHIqarildi service xabarini o‘chirish
+// =====================================================
+bot.on("left_chat_member", async (ctx) => {
+  const type = ctx.chat?.type;
+  if (type !== "group" && type !== "supergroup") return;
+
+  try {
+    await ctx.deleteMessage();
+    console.log("🗑 Deleted left/kick service message");
+  } catch (e) {
+    // ruxsat bo'lmasa jim
   }
 });
 
@@ -296,10 +330,7 @@ bot.on("text", async (ctx) => {
       console.error("❌ ADMIN ga yuborishda xato:", e?.description || e);
     }
 
-    await ctx.reply(
-      "✅ Arizangiz yuborildi! Tez orada bog‘lanamiz.",
-      Markup.removeKeyboard()
-    );
+    await ctx.reply("✅ Arizangiz yuborildi! Tez orada bog‘lanamiz.", Markup.removeKeyboard());
     userState.delete(chatId);
   }
 });
@@ -308,7 +339,6 @@ bot.on("text", async (ctx) => {
 // RUN (Webhook yoki Polling)
 // =====================
 async function start() {
-  // webhook qolib ketgan bo‘lishi mumkin — tozalab yuboramiz
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
   } catch (e) {
